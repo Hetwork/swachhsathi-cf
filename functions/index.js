@@ -603,7 +603,7 @@ exports.autoAssignNearestWorker = onDocumentCreated(
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
-    // Add a status entry to the reportStatus subcollection
+    // Add a status entry to the reportStatus subcollection with workerName and message
     await admin.firestore()
       .collection("reports")
       .doc(reportId)
@@ -611,6 +611,8 @@ exports.autoAssignNearestWorker = onDocumentCreated(
       .add({
         status: "assigned",
         workerId: nearestWorker.uid,
+        workerName: nearestWorker.name,
+        message: `Status changed to assigned`,
         timestamp: admin.firestore.FieldValue.serverTimestamp(),
       });
 
