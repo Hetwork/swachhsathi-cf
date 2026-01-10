@@ -603,12 +603,19 @@ exports.autoAssignNearestWorker = onDocumentCreated(
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
+    // Add a status entry to the reportStatus subcollection
+    await admin.firestore()
+      .collection("reports")
+      .doc(reportId)
+      .collection("reportStatus")
+      .add({
+        status: "assigned",
+        workerId: nearestWorker.uid,
+        timestamp: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
     logger.info(
-      `Report ${reportId} assigned to worker ${nearestWorker.uid} (${
-        nearestWorker.name
-      }) from NGO ${nearestWorker.ngoId}, distance: ${minDistance.toFixed(
-        2
-      )} km`
+      `Report ${reportId} assigned to worker ${nearestWorker.uid} (${nearestWorker.name}) from NGO ${nearestWorker.ngoId}, distance: ${minDistance.toFixed(2)} km`
     );
   }
 );
