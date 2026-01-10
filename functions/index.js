@@ -343,6 +343,7 @@ exports.createWorker = onCall(
         name,
         ngoId,
         phone,
+        isActive: false,
         role: "worker",
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -594,9 +595,11 @@ exports.autoAssignNearestWorker = onDocumentCreated(
       return;
     }
 
-    // Assign the report to the nearest worker
+    // Assign the report to the nearest worker and add ngoId
     await admin.firestore().collection("reports").doc(reportId).update({
       assignedTo: nearestWorker.uid,
+      ngoId: nearestWorker.ngoId,
+      status: "assigned",
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
@@ -609,7 +612,6 @@ exports.autoAssignNearestWorker = onDocumentCreated(
     );
   }
 );
-
 /**
  * Send notification when report status changes to resolved
  */
@@ -757,3 +759,179 @@ exports.onReportAssigned = onDocumentUpdated(
     return null;
   }
 );
+/**
+ * Analyze waste image and classify it
+ */
+exports.analyzeWasteImage = onCall(async (request) => {
+  try {
+    const { imageUri } = request.data;
+
+    if (!imageUri) {
+      throw new Error('Image URI is required');
+    }
+
+    // Detect labels using Vision AI
+    const [result] = await client.labelDetection(imageUri);
+    const labels = result.labelAnnotations || [];
+
+    // Analyze labels to determine waste type
+    const wasteAnalysis = classifyWaste(labels);
+
+    // Log for analytics
+    if (request.auth) {
+      await admin.firestore().collection('wasteScans').add({
+        userId: request.auth.uid,
+        imageUri,
+        detectedType: wasteAnalysis.type,
+        category: wasteAnalysis.category,
+        confidence: wasteAnalysis.confidence,
+        timestamp: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
+
+    return wasteAnalysis;
+  } catch (error) {
+    logger.error('Error analyzing waste image:', error);
+    throw new Error('Failed to analyze image');
+  }
+});
+
+/**
+ * Classify waste based on detected labels
+ */
+function classifyWaste(labels) {
+  const labelTexts = labels.map(l => l.description.toLowerCase());
+  const maxConfidence = Math.max(...labels.map(l => l.score || 0));
+
+  // Plastic detection
+  if (labelTexts.some(l => ['plastic', 'bottle', 'container', 'packaging'].includes(l))) {
+    return {
+      type: 'Plastic Waste',
+      category: 'recyclable',
+      confidence: Math.round(maxConfidence * 100),
+      recyclingInfo: 'Most plastic bottles and containers (labeled #1-7) are recyclable. Check your local recycling guidelines for specific types accepted.',
+      disposalMethod: 'Rinse the plastic item, remove caps/lids, and place in your recycling bin. Look for the recycling symbol and number on the bottom.',
+    };
+  }
+
+  // Paper/Cardboard detection
+  if (labelTexts.some(l => ['paper', 'cardboard', 'box', 'newspaper', 'magazine'].includes(l))) {
+    return {
+      type: 'Paper/Cardboard',
+      category: 'recyclable',
+      confidence: Math.round(maxConfidence * 100),
+      recyclingInfo: 'Paper and cardboard are highly recyclable materials. Keep them dry and clean for optimal recycling.',
+      disposalMethod: 'Flatten cardboard boxes, remove any plastic tape or labels, and place in your recycling bin. Avoid soiled or greasy paper.',
+    };
+  }
+
+  // Glass detection
+  if (labelTexts.some(l => ['glass', 'jar', 'bottle', 'wine'].includes(l))) {
+    return {
+      type: 'Glass',
+      category: 'recyclable',
+      confidence: Math.round(maxConfidence * 100),
+      recyclingInfo: 'Glass is 100% recyclable and can be recycled endlessly without loss of quality or purity.',
+      disposalMethod: 'Rinse glass containers, remove caps/lids, and place in your recycling bin. Some areas require color separation.',
+    };
+  }
+
+  // Metal detection
+  if (labelTexts.some(l => ['metal', 'aluminum', 'can', 'tin', 'steel'].includes(l))) {
+    return {
+      type: 'Metal',
+      category: 'recyclable',
+      confidence: Math.round(maxConfidence * 100),
+      recyclingInfo: 'Metal cans (aluminum and steel) are highly valuable recyclable materials.',
+      disposalMethod: 'Rinse cans, crush to save space, and place in recycling bin. Metal foil and trays are also recyclable.',
+    };
+  }
+
+  // Organic/Food waste detection
+  if (labelTexts.some(l => ['food', 'fruit', 'vegetable', 'organic', 'plant', 'leaf'].includes(l))) {
+    return {
+      type: 'Organic Waste',
+      category: 'biodegradable',
+      confidence: Math.round(maxConfidence * 100),
+      recyclingInfo: 'Organic waste can be composted to create nutrient-rich soil and reduce methane emissions from landfills.',
+      disposalMethod: 'Compost at home or use green waste bins. Avoid meat, dairy, and oily foods in home composting.',
+    };
+  }
+
+  // Electronic waste detection
+  if (labelTexts.some(l => ['electronic', 'phone', 'computer', 'battery', 'gadget', 'device'].includes(l))) {
+    return {
+      type: 'Electronic Waste',
+      category: 'hazardous',
+      confidence: Math.round(maxConfidence * 100),
+      recyclingInfo: 'E-waste contains valuable materials and hazardous substances. Never throw electronics in regular trash.',
+      disposalMethod: 'Take to designated e-waste collection centers or retailer take-back programs. Delete personal data first.',
+    };
+  }
+
+  // Battery detection
+  if (labelTexts.some(l => ['battery', 'batteries', 'cell'].includes(l))) {
+    return {
+      type: 'Batteries',
+      category: 'hazardous',
+      confidence: Math.round(maxConfidence * 100),
+      recyclingInfo: 'Batteries contain toxic materials and must be recycled properly to prevent environmental contamination.',
+      disposalMethod: 'Take to battery collection points at retail stores or hazardous waste facilities. Never throw in regular trash.',
+    };
+  }
+
+  // Textile detection
+  if (labelTexts.some(l => ['textile', 'fabric', 'clothing', 'cloth', 'shirt', 'pants'].includes(l))) {
+    return {
+      type: 'Textiles',
+      category: 'recyclable',
+      confidence: Math.round(maxConfidence * 100),
+      recyclingInfo: 'Textiles can be donated, recycled, or repurposed to reduce landfill waste.',
+      disposalMethod: 'Donate wearable clothing to charity, use textile recycling bins for damaged items, or repurpose as cleaning rags.',
+    };
+  }
+
+  // Default general waste
+  return {
+    type: 'General Waste',
+    category: 'general',
+    confidence: Math.round(maxConfidence * 100),
+    recyclingInfo: 'This item appears to be general waste. Check if any parts can be separated and recycled.',
+    disposalMethod: 'Place in general waste bin. Consider if any components can be separated for recycling.',
+  };
+}
+
+/**
+ * Get waste scanning statistics for a user
+ */
+exports.getUserWasteScanStats = onCall(async (request) => {
+  try {
+    if (!request.auth) {
+      throw new Error('User must be authenticated');
+    }
+
+    const scansSnapshot = await admin
+      .firestore()
+      .collection('wasteScans')
+      .where('userId', '==', request.auth.uid)
+      .get();
+
+    const scans = scansSnapshot.docs.map(doc => doc.data());
+
+    const stats = {
+      totalScans: scans.length,
+      byCategory: {
+        recyclable: scans.filter(s => s.category === 'recyclable').length,
+        biodegradable: scans.filter(s => s.category === 'biodegradable').length,
+        hazardous: scans.filter(s => s.category === 'hazardous').length,
+        general: scans.filter(s => s.category === 'general').length,
+      },
+      recentScans: scans.slice(-5).reverse(),
+    };
+
+    return stats;
+  } catch (error) {
+    logger.error('Error fetching waste scan stats:', error);
+    throw new Error('Failed to fetch statistics');
+  }
+});
