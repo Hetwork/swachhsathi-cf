@@ -329,6 +329,18 @@ exports.createWorker = onCall(
 
       logger.info("Create worker request for:", email, name, phone);
 
+      // Check if email already exists
+      try {
+        await admin.auth().getUserByEmail(email);
+        // If we get here, user exists
+        throw new Error("A user with this email already exists");
+      } catch (error) {
+        // If error code is user-not-found, continue with creation
+        if (error.code !== "auth/user-not-found") {
+          throw error;
+        }
+      }
+
       // Create Firebase Auth user
       const userRecord = await admin.auth().createUser({
         email,
